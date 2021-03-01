@@ -1,12 +1,12 @@
 use super::Result;
-use crate::protos::temporal::api::history::v1::History;
 use crate::{
     machines::{workflow_machines::WorkflowMachines, ProtoCommand},
     protos::temporal::api::{
-        enums::v1::EventType,
+        enums::v1::{EventType, WorkflowTaskFailedCause},
         history::v1::{
-            history_event::Attributes, HistoryEvent, TimerStartedEventAttributes,
-            WorkflowExecutionStartedEventAttributes, WorkflowTaskCompletedEventAttributes,
+            history_event::Attributes, History, HistoryEvent, TimerStartedEventAttributes,
+            WorkflowExecutionCompletedEventAttributes, WorkflowExecutionStartedEventAttributes,
+            WorkflowTaskCompletedEventAttributes, WorkflowTaskFailedEventAttributes,
             WorkflowTaskScheduledEventAttributes, WorkflowTaskStartedEventAttributes,
         },
     },
@@ -14,6 +14,7 @@ use crate::{
 };
 use anyhow::bail;
 use std::time::SystemTime;
+use uuid::Uuid;
 
 #[derive(Default, Debug)]
 pub struct TestHistoryBuilder {
@@ -23,6 +24,7 @@ pub struct TestHistoryBuilder {
     current_event_id: i64,
     workflow_task_scheduled_event_id: i64,
     previous_started_event_id: i64,
+    previous_task_completed_id: i64,
 }
 
 impl TestHistoryBuilder {
@@ -55,7 +57,7 @@ impl TestHistoryBuilder {
     /// EVENT_TYPE_WORKFLOW_TASK_STARTED
     /// EVENT_TYPE_WORKFLOW_TASK_COMPLETED
     /// ```
-    pub fn add_workflow_task(&mut self) {
+    pub fn add_full_wf_task(&mut self) {
         self.add_workflow_task_scheduled_and_started();
         self.add_workflow_task_completed();
     }
@@ -85,7 +87,26 @@ impl TestHistoryBuilder {
             scheduled_event_id: self.workflow_task_scheduled_event_id,
             ..Default::default()
         };
-        self.build_and_push_event(EventType::WorkflowTaskCompleted, attrs.into());
+        let id = self.add_get_event_id(EventType::WorkflowTaskCompleted, Some(attrs.into()));
+        self.previous_task_completed_id = id;
+    }
+
+    pub fn add_workflow_execution_completed(&mut self) {
+        let attrs = WorkflowExecutionCompletedEventAttributes {
+            workflow_task_completed_event_id: self.previous_task_completed_id,
+            ..Default::default()
+        };
+        self.build_and_push_event(EventType::WorkflowExecutionCompleted, attrs.into());
+    }
+
+    pub fn add_workflow_task_failed(&mut self, cause: WorkflowTaskFailedCause, new_run_id: &str) {
+        let attrs = WorkflowTaskFailedEventAttributes {
+            scheduled_event_id: self.workflow_task_scheduled_event_id,
+            cause: cause.into(),
+            new_run_id: new_run_id.into(),
+            ..Default::default()
+        };
+        self.build_and_push_event(EventType::WorkflowTaskFailed, attrs.into());
     }
 
     pub fn as_history(&self) -> History {
@@ -142,9 +163,11 @@ impl TestHistoryBuilder {
 
 fn default_attribs(et: EventType) -> Result<Attributes> {
     Ok(match et {
-        EventType::WorkflowExecutionStarted => {
-            WorkflowExecutionStartedEventAttributes::default().into()
+        EventType::WorkflowExecutionStarted => WorkflowExecutionStartedEventAttributes {
+            original_execution_run_id: Uuid::new_v4().to_string(),
+            ..Default::default()
         }
+        .into(),
         EventType::WorkflowTaskScheduled => WorkflowTaskScheduledEventAttributes::default().into(),
         EventType::TimerStarted => TimerStartedEventAttributes::default().into(),
         _ => bail!("Don't know how to construct default attrs for {:?}", et),
